@@ -2,11 +2,11 @@ const $ = (selector, scope = document) => scope?.querySelector(selector) || null
 const $$ = (selector, scope = document) => Array.from(scope?.querySelectorAll(selector) || []);
 
 const STORAGE_KEY = "qingning_saved_sets_v1";
-
 const state = {
   generatedQuestions: [],
   lastFocusedElement: null,
-  savedSets: []
+  savedSets: [],
+  demandConfirmed: false
 };
 
 const titles = {
@@ -74,9 +74,8 @@ function bindNavigation() {
   $(".mobile-menu")?.addEventListener("click", () => $("#sidebar")?.classList.toggle("open"));
 
   $("#newLessonBtn")?.addEventListener("click", () => {
-    resetWorkspace();
     switchView("workspace");
-    setTimeout(() => $("#lessonPrompt")?.focus(), 250);
+    window.scrollTo({ top: 0, behavior: "smooth" });
   });
 }
 
@@ -95,7 +94,9 @@ function bindPrompt() {
 
   promptInput?.addEventListener("input", () => {
     if (charCount) charCount.textContent = promptInput.value.length;
-    updateStep(promptInput.value.trim() ? 2 : 1);
+    state.demandConfirmed = false;
+    toggleDemandConfirm(promptInput.value.trim().length > 0);
+    updateStep(1);
   });
 
   $("#exampleBtn")?.addEventListener("click", () => {
@@ -104,7 +105,9 @@ function bindPrompt() {
     if (charCount) charCount.textContent = promptInput.value.length;
     const query = $("#materialQuery");
     if (query) query.value = "勾股定理实际应用与易错点";
-    updateStep(2);
+    state.demandConfirmed = false;
+    toggleDemandConfirm(true);
+    updateStep(1);
     promptInput.focus();
   });
 
@@ -113,7 +116,9 @@ function bindPrompt() {
       if (!promptInput) return;
       promptInput.value += `${promptInput.value.trim() ? "，" : ""}${button.dataset.add}`;
       if (charCount) charCount.textContent = promptInput.value.length;
-      updateStep(2);
+      state.demandConfirmed = false;
+      toggleDemandConfirm(true);
+      updateStep(1);
       promptInput.focus();
     });
   });
@@ -124,10 +129,13 @@ function bindTaskFlow() {
     updateStep(1);
     $("#lessonPrompt")?.focus();
   });
+  $("#confirmDemandBtn")?.addEventListener("click", () => confirmDemandAndContinue());
   $$(".task-step-panel .step-head").forEach(head => {
     head.addEventListener("click", () => {
       const panel = head.closest(".task-step-panel");
-      updateStep(Number(panel?.dataset.step || 1));
+      const targetStep = Number(panel?.dataset.step || 1);
+      if (!canOpenStep(targetStep)) return;
+      updateStep(targetStep);
     });
   });
   $("#skipToGenerateBtn")?.addEventListener("click", () => {
@@ -135,6 +143,45 @@ function bindTaskFlow() {
     updateStep(3);
     $("#generateBtn")?.focus();
   });
+}
+
+function canOpenStep(targetStep) {
+  const promptInput = $("#lessonPrompt");
+  if (targetStep > 1 && !promptInput?.value.trim()) {
+    showToast("请先填写备课需求");
+    updateStep(1);
+    promptInput?.focus();
+    return false;
+  }
+  if (targetStep > 1 && !state.demandConfirmed) {
+    showToast("请先确认需求，再进入下一步");
+    toggleDemandConfirm(true);
+    updateStep(1);
+    $("#confirmDemandBtn")?.focus();
+    return false;
+  }
+  return true;
+}
+
+function toggleDemandConfirm(visible) {
+  const row = $("#promptNextRow");
+  if (!row) return;
+  row.hidden = !visible || state.demandConfirmed;
+}
+
+function confirmDemandAndContinue() {
+  const promptInput = $("#lessonPrompt");
+  if (!promptInput?.value.trim()) {
+    showToast("请先填写备课需求");
+    promptInput?.focus();
+    return;
+  }
+  state.demandConfirmed = true;
+  toggleDemandConfirm(false);
+  updateStep(2);
+  flashStepComplete(1);
+  showToast("已完成需求描述");
+  setTimeout(() => $("#materialQuery")?.focus(), 260);
 }
 
 function bindSourceTabs() {
@@ -233,7 +280,10 @@ function updateSelectedMaterialCount() {
   const label = $("#selectedMaterialCount");
   if (label) label.textContent = `已选择 ${selected} 份资料`;
   setMaterialStatus(selected);
-  if (selected > 0 && getCurrentFlowStep() === 2) updateStep(3);
+  if (selected > 0 && getCurrentFlowStep() === 2) {
+    updateStep(3);
+    flashStepComplete(2);
+  }
   return selected;
 }
 
@@ -342,6 +392,7 @@ function handleGenerate(options = {}) {
     renderGeneratedQuestions(state.generatedQuestions);
     setGenerateLoading(false);
     updateStep(3, "done");
+    flashStepComplete(3);
     openModal($("#resultModal"));
     showToast(options.regenerate ? "已重新生成一版习题" : "已生成可编辑习题");
   }, 500);
@@ -356,6 +407,10 @@ function validateGenerationForm() {
     showToast("备课要求不能为空");
     promptInput?.focus();
     return false;
+  }
+  if (!state.demandConfirmed) {
+    state.demandConfirmed = true;
+    toggleDemandConfirm(false);
   }
   if (!checkedTypes.length) {
     showToast("至少选择一种题型");
@@ -639,15 +694,16 @@ function updateTaskPanels(activeStep, generateState = "") {
   const step1State = $("#step1State");
   const step2State = $("#step2State");
   const step3State = $("#step3State");
-  if (step1State) step1State.textContent = activeStep > 1 ? "已完成" : "进行中";
+  if (step1State) step1State.textContent = state.demandConfirmed ? "已完成" : activeStep === 1 ? "进行中" : "待确认";
   if (step2State) step2State.textContent = activeStep > 2 ? "已完成" : activeStep === 2 ? "进行中" : "待开始";
   if (step3State) step3State.textContent = generateState === "loading" ? "正在生成" : generateState === "done" ? "已完成" : activeStep === 3 ? "准备生成" : "待开始";
 }
 
 function updateFlowStatus(activeStep, generateState = "") {
-  const demandDone = Boolean($("#lessonPrompt")?.value.trim());
+  const hasDemand = Boolean($("#lessonPrompt")?.value.trim());
+  const demandDone = state.demandConfirmed;
   const selected = $$(".context-checkbox:checked").length;
-  setStatusItem($("#statusDemand"), demandDone ? "done" : activeStep === 1 ? "active" : "", demandDone ? "已完成需求描述" : "等待输入");
+  setStatusItem($("#statusDemand"), demandDone ? "done" : activeStep === 1 ? "active" : "", demandDone ? "已完成需求描述" : hasDemand ? "有内容，待确认" : "等待输入");
   setStatusItem($("#statusMaterials"), selected > 0 ? "done" : activeStep === 2 ? "active" : "", selected > 0 ? `已选择 ${selected} 份资料` : activeStep >= 2 ? "可跳过资料" : "未选择");
   const generateText = generateState === "loading" ? "正在生成" : generateState === "done" ? "已生成完成" : "未开始";
   const generateClass = generateState === "loading" ? "loading active" : generateState === "done" ? "done" : activeStep === 3 ? "active" : "";
@@ -657,7 +713,8 @@ function updateFlowStatus(activeStep, generateState = "") {
     if (generateState === "done") summary.textContent = `已生成 ${$$(".editable-question").length || state.generatedQuestions.length} 道题，可编辑保存`;
     else if (generateState === "loading") summary.textContent = "正在生成练习，请稍等";
     else if (selected > 0) summary.textContent = `已选择 ${selected} 份资料，下一步即可生成`;
-    else if (demandDone) summary.textContent = "需求已填写，可以选择资料或直接生成";
+    else if (demandDone) summary.textContent = "需求已确认，可以选择资料或直接生成";
+    else if (hasDemand) summary.textContent = "需求已输入，点击确认进入下一步";
     else summary.textContent = "预计 1 分钟完成首版练习";
   }
 }
@@ -679,6 +736,18 @@ function setStatusItem(item, statusClass, text) {
   statusClass.split(" ").filter(Boolean).forEach(name => item.classList.add(name));
   const em = $("em", item);
   if (em) em.textContent = text;
+}
+
+function flashStepComplete(stepNumber) {
+  const panel = $(`.task-step-panel[data-step="${stepNumber}"]`);
+  const status = stepNumber === 1 ? $("#statusDemand") : stepNumber === 2 ? $("#statusMaterials") : $("#statusGenerate");
+  [panel, status].forEach(element => {
+    if (!element) return;
+    element.classList.remove("just-completed");
+    void element.offsetWidth;
+    element.classList.add("just-completed");
+    setTimeout(() => element.classList.remove("just-completed"), 1100);
+  });
 }
 
 function bindModals() {
@@ -765,6 +834,7 @@ function resetWorkspace() {
   const fileList = $("#fileList");
 
   if (promptInput) promptInput.value = "";
+  state.demandConfirmed = false;
   if (charCount) charCount.textContent = "0";
   if (queryInput) queryInput.value = "";
   if (fileList) fileList.innerHTML = "";
@@ -779,6 +849,7 @@ function resetWorkspace() {
   const range = $("#questionCount");
   if (range) range.value = "12";
   $("#questionCountLabel") && ($("#questionCountLabel").textContent = "12 题");
+  toggleDemandConfirm(false);
   updateSelectedMaterialCount();
   updateStep(1);
 }
